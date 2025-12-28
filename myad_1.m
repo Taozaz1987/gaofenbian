@@ -179,10 +179,46 @@ for tau_idx = 1:length(t)
         ALFMT(tau_idx, f_idx) = sum(integrand) * dt;
     end
 end
-magnitude_ALFMT=abs(ALFMT);
-ALFMT_s_hs=hs(ALFMT,t,f);
-phi=calculate_phi(ALFMT_s_hs,t);
-V_ALFMT_r=calculate_Vr(ALFMT,ALFMT_s_hs,phi);
-r_reconstruct=de_V_ALFMT(V_ALFMT_r,t,f);
-r_real=real(r_reconstruct);
-s_recon=conv(r_real,ricker_min,'same');
+% --- Dynamic Deconvolution inspired by xiugai.m ---
+% 1) Magnitude of ALFMT
+magnitude_ALFMT = abs(ALFMT);
+
+% 2) 2D Gaussian smoothing on time-frequency plane
+sigma_t = max(1, round(0.1 / dt));                % ~100 ms in samples
+sigma_f = max(1, round(5 / (f(2) - f(1))));       % ~5 Hz in bins
+try
+    ALFMT_s_smooth = imgaussfilt(magnitude_ALFMT, [sigma_t, sigma_f]);
+catch
+    % Fallback to manual convolution if Image Processing Toolbox is missing
+    h_gauss = fspecial_gauss([sigma_t * 2, sigma_f * 2], sigma_t / 2);
+    ALFMT_s_smooth = conv2(magnitude_ALFMT, h_gauss, 'same');
+end
+
+% 3) Minimum-phase estimation via Hilbert transform along frequency axis
+log_spec = log(ALFMT_s_smooth + eps);
+analytic_spec = hilbert(log_spec.').';  % hilbert acts along columns, so transpose twice
+phi = imag(analytic_spec);
+
+% 4) Stabilized denominator with tunable mu
+mu = 0.05;                                % Tunable pre-whitening factor
+A_max = max(ALFMT_s_smooth(:));
+Denominator = ALFMT_s_smooth + mu * A_max;
+
+% 5) Construct V_ALFMT_r without hs/miu dependency
+V_ALFMT_r = ALFMT ./ Denominator .* exp(-1i * phi);
+
+% 6) Inverse ALFMT
+r_reconstruct = de_V_ALFMT(V_ALFMT_r, t, f);
+r_real = real(r_reconstruct);
+s_recon = conv(r_real, ricker_min, 'same');
+
+%% Helper for Gaussian kernel (fallback when Image Toolbox is unavailable)
+function h = fspecial_gauss(hsize, sigma)
+    siz = (hsize-1)/2;
+    [x,y] = meshgrid(-siz(2):siz(2), -siz(1):siz(1));
+    arg = -(x.*x + y.*y)/(2*sigma*sigma);
+    h = exp(arg);
+    h(h<eps*max(h(:))) = 0;
+    sumh = sum(h(:));
+    if sumh ~= 0, h = h/sumh; end
+end
