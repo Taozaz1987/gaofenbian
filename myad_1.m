@@ -96,29 +96,6 @@ nfft = 2^nextpow2(nt);
 f = (0:nfft-1) * (fs/nfft);
 f_pos = f(1:nfft/2+1);  % 正频率部分
 
-% 初始化衰减函数矩阵
-attenuation_matrix = zeros(length(f_pos), nt);
-
-% 计算每个时间点τ和每个频率f的衰减
-for tau_idx = 1:nt
-    tau = t(tau_idx);  % 旅行时
-    
-    % 计算振幅衰减
-    amp_attenuation = exp(-pi * f_pos * tau / Q);
-    
-    % 计算相位畸变（希尔伯特变换关系）
-    % 根据论文公式(20): a_Q(τ,f) = exp(-πfτ/Q + iH(πfτ/Q))
-    % 其中H表示希尔伯特变换
-    phase_term = pi * f_pos * tau / Q;
-    
-    % 计算希尔伯特变换（使用解析信号方法）
-    analytic_signal = hilbert(phase_term);
-    phase_attenuation = imag(analytic_signal);
-    
-    % 构建复数衰减函数
-    attenuation_matrix(:, tau_idx) = amp_attenuation .* exp(1i * phase_attenuation);
-end
-
 %% 5. 生成非平稳地震信号
 % 根据论文公式(21): s(f) = w(f) ∫ a_Q(τ,f) r(τ) exp(i2πfτ) dτ
 
@@ -129,27 +106,25 @@ W_pos = W(1:nfft/2+1);
 % 初始化频谱
 S_nonstationary = zeros(1, nfft);
 
-% 对每个频率计算积分
-for f_idx = 1:length(f_pos)
-    f_current = f_pos(f_idx);
+% 基于 Futterman 模型的振幅衰减与相位畸变
+for tau_idx = 1:nt
+    tau = t(tau_idx);  % 旅行时
     
-    % 计算积分项: ∫ a_Q(τ,f) r(τ) exp(i2πfτ) dτ
-    integral_term = 0;
-    for tau_idx = 1:nt
-        tau = t(tau_idx);
-        integral_term = integral_term + ...
-                       attenuation_matrix(f_idx, tau_idx) * ...
-                       reflection_coef(tau_idx) * ...
-                       exp(1i * 2 * pi * f_current * tau) * dt;
-    end
+    amp_atten = exp(-pi * f_pos * tau / Q);
+    phase_lag = 2*pi * f_pos * tau .* (1/pi/Q) .* log((f_pos + eps) / f0);
+    Q_filter = amp_atten .* exp(-1i * phase_lag);
     
-    % 计算该频率的频谱值
-    S_nonstationary(f_idx) = W_pos(f_idx) * integral_term;
-    
-    % 设置负频率（共轭对称）
-    if f_idx > 1 && f_idx < length(f_pos)
-        S_nonstationary(nfft - f_idx + 2) = conj(S_nonstationary(f_idx));
-    end
+    % 计算并叠加该时间点的频谱贡献
+    S_comp = W_pos .* Q_filter * reflection_coef(tau_idx);
+    S_shifted = S_comp .* exp(-1i * 2 * pi * f_pos * tau);
+    S_nonstationary(1:length(f_pos)) = S_nonstationary(1:length(f_pos)) + S_shifted;
+end
+
+% 设置负频率（共轭对称），确保与 xiugai.m 相同的谱对称性
+if mod(nfft, 2) == 0
+    S_nonstationary(nfft/2+2:end) = conj(S_nonstationary(nfft/2:-1:2));
+else
+    S_nonstationary((nfft+1)/2+1:end) = conj(S_nonstationary((nfft+1)/2:-1:2));
 end
 
 % 逆傅里叶变换得到时间域信号
