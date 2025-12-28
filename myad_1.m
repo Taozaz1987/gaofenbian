@@ -143,28 +143,40 @@ s=s_nonstationary;
 k=4;%假设k=
 f=linspace(0,100-100/1000,1000);
 f_optloc=optloc(s,t);%计算局部频率
+f_optloc=smooth(f_optloc,20)';%平滑局部频率，提升稳定性
 ALFMT=zeros(length(t),length(f));
 dt=t(2)-t(1);
 df=f(2)-f(1);
 sigma=zeros(length(t),length(f));
 for tau_idx = 1:length(t)
     tau = t(tau_idx);
-    f_loc_val = f_optloc(tau_idx);  % 获取该时刻的局部频率
-    
+    f_loc_val = abs(f_optloc(tau_idx));  % 获取该时刻的局部频率并约束为正
+
     % 向量化计算sigma（针对所有频率点）
-    sigma_inv = (f_loc_val + abs(f_loc_val - f)) / k;  % 向量
-    sigma(tau_idx,:) = 1 ./ sigma_inv;  % 实际的sigma值
-    
+    sigma_inv_vec = (f_loc_val + abs(f_loc_val - f)) / k;  % 向量
+    sigma(tau_idx,:) = 1 ./ sigma_inv_vec;  % 实际的sigma值
+
     % 预计算高斯窗和频率项
     for f_idx = 1:length(f)
-        % 高斯窗（向量化）
-        window = exp(-(t - tau).^2 .* (sigma_inv(f_idx)^2)/2);
-        
+        inv_sig = sigma_inv_vec(f_idx);
+        % 限制积分窗口，减少计算量并避免接近零的sigma
+        eff_width = 3.5 / (inv_sig + eps);
+        t_start = tau - eff_width;
+        t_end = tau + eff_width;
+        idx_range = (t >= t_start) & (t <= t_end);
+        if ~any(idx_range), continue; end
+
+        t_sub = t(idx_range);
+        s_sub = s(idx_range);
+
+        % 高斯窗（向量化），保留归一化因子
+        window = (inv_sig/sqrt(2*pi)) * exp(-(t_sub - tau).^2 .* (inv_sig^2)/2);
+
         % 完整被积函数
-        integrand = s .* window .* exp(-1i * 2 * pi * f(f_idx) * t);
-        
+        integrand = s_sub .* window .* exp(-1i * 2 * pi * f(f_idx) * t_sub);
+
         % 使用trapz积分
-        ALFMT(tau_idx, f_idx) = sigma_inv(f_idx)/sqrt(2*pi) * trapz(t, integrand);
+        ALFMT(tau_idx, f_idx) = sum(integrand) * dt;
     end
 end
 magnitude_ALFMT=abs(ALFMT);
